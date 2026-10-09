@@ -11,6 +11,13 @@ validate(session)
 
 That is all you need. `session.data` is a DataFrame with every sample of every complete lap, and `session.laps` is the lap table.
 
+The same call works for a whole folder of CSV files (see [Many files](#many-files)):
+
+```python
+sessions = Session("my_folder")
+validate(sessions)
+```
+
 ## Requirements
 
 - Python 3.9 or newer
@@ -76,6 +83,43 @@ The out-lap and in-lap are **removed by default**, so `session.data` and `sessio
 
 ```python
 full = Session("my_session.csv", keep_in_out=True)
+```
+
+## Many files
+
+Give `Session` a folder instead of a file and it loads every CSV in it. The result is a dict: file name → `Session`.
+
+```python
+sessions = Session("my_folder")
+validate(sessions)                      # checks every file
+
+session = sessions["my_session.csv"]    # one session, used exactly like above
+```
+
+While loading, it prints one line per file:
+
+```
+Loading 4 CSV file(s) from my_folder
+  ok    2.csv: Session(...)
+  ok    10.csv: Session(...)
+  skip  broken.csv: ParserError: Error tokenizing data. C error: EOF inside string starting at row 3000
+  skip  laps_export.csv: ValueError: Not an AiM CSV export. ...
+Loaded 2 of 4 file(s).
+```
+
+- Only `.csv` files directly in the folder are read; subfolders are not searched.
+- Files are loaded in natural order: `2.csv`, `10.csv`, `46.csv`.
+- A file that cannot be loaded is skipped with the reason, and the other files still load. Files written by `export` in the same folder are skipped this way.
+- Every file is its own `Session`, so files with different channels (e.g. with and without ECU) are fine.
+- `keep_in_out=True` applies to every file: `Session("my_folder", keep_in_out=True)`.
+- `validate(sessions)` returns `True` only if every file has no issues.
+
+**Best lap of every session**
+
+```python
+for name, s in sessions.items():
+    best = s.laps.loc[s.laps["lap_time"].idxmin()]
+    print(name, s.metadata.get("Racer"), "| best lap", best["lap"], best["lap_time_str"])
 ```
 
 ## Common tasks
@@ -171,6 +215,7 @@ my_session.csv: 2 warning(s)
 - **Distance.** It comes from integrating `GPS Speed` over time, measured from the exact moment the car crosses the start/finish line.
 - **Frozen logger.** If the logger repeats its last row, speed stays above zero while the car is not moving, so `distance` keeps growing there. `validate` reports these stretches.
 - **Datetime.** `metadata["Datetime"]` is `None` when the date in the file is not in English. `Date` and `Time` are always kept as text.
+- **Uploads.** In Colab, wait until an upload has finished before loading the file. A file that is still uploading is incomplete and fails with `EOF inside string starting at row ...` (or is skipped with that reason when loading a folder).
 - **Version.** `get_version()` returns the version of `logger_data`. When results differ between two people, check this first.
 
 ## Changing the code
@@ -179,4 +224,5 @@ Bump `__version__` at the top of `logger_data.py` whenever the parsing changes, 
 
 ## Versions
 
+- **0.2.0** — `Session(folder)` loads every CSV in a folder into a dict; `validate` accepts that dict.
 - **0.1.0** — First version: `Session`, `validate`, `get_lap`, `export`, `get_version`.

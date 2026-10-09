@@ -8,13 +8,17 @@ Usage:
     session = Session("my_session.csv")  # parse one file
     validate(session)                    # optional sanity checks
 
+    sessions = Session("my_folder")      # parse every CSV in a folder -> dict
+    validate(sessions)                   # checks every file
+    sessions["my_session.csv"].data      # one session from the folder
+
     session.data                         # samples of the complete laps (index: time in s)
     session.laps                         # lap table: lap, type, start, end, lap_time, lap_time_str
     session.metadata                     # track, vehicle, driver, date, sample rate, ...
     session.units                        # channel name -> unit
     session.get_lap(3)                   # samples of one lap
     session.export("out", fmt="xlsx")    # write files for people who do not use Python
-    get_version()                        # version of this module, e.g. "0.1.0"
+    get_version()                        # version of this module, e.g. "0.2.0"
 
 Laps are numbered like Race Studio: out-lap 0, complete laps 1..N, in-lap N+1.
 The out-lap and in-lap are removed unless Session(path, keep_in_out=True).
@@ -35,7 +39,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 
 # ---------------------------------------------------------------------------
@@ -455,9 +459,47 @@ def _validate(meta: dict, df: pd.DataFrame, laps: pd.DataFrame) -> list[str]:
 # Public API
 # ---------------------------------------------------------------------------
 
+def _natural_key(path: Path) -> list:
+    """
+    Sort key that compares the numbers inside file names as numbers,
+    so "2.csv" comes before "10.csv" and "10.csv" before "46.csv".
+    """
+    return [int(part) if part.isdigit() else part.lower()
+            for part in re.split(r"(\d+)", path.name)]
+
+
+def _load_folder(folder: str | Path, keep_in_out: bool = False) -> dict:
+    """
+    Load every AiM CSV file in a folder (subfolders are not searched).
+    Called by Session(folder). Returns a dict: file name -> Session.
+      - Files are loaded in natural order: 2.csv, 10.csv, 46.csv
+      - A file that cannot be loaded (not an AiM export, incomplete upload, ...)
+        is skipped and reported; the other files still load
+      - keep_in_out is passed to every Session
+    """
+    folder = Path(folder)
+    paths = sorted((p for p in folder.iterdir() if p.is_file() and p.suffix.lower() == ".csv"),
+                   key=_natural_key)
+    print(f"Loading {len(paths)} CSV file(s) from {folder}")
+
+    sessions = {}
+    for path in paths:
+        try:
+            sessions[path.name] = Session(path, keep_in_out=keep_in_out)
+            print(f"  ok    {path.name}: {sessions[path.name]}")
+        except Exception as e:
+            # The first line of the error is enough to know why the file was skipped
+            reason = str(e).splitlines()[0] if str(e) else ""
+            print(f"  skip  {path.name}: {type(e).__name__}: {reason}")
+
+    print(f"Loaded {len(sessions)} of {len(paths)} file(s).")
+    return sessions
+
+
 class Session:
     """
     One AiM CSV file, parsed and ready to use.
+    Given a folder instead of a file, returns a dict: file name -> Session.
 
     Usage:
         session = Session("my_session.csv")
@@ -469,9 +511,18 @@ class Session:
         session.export("out", fmt="xlsx")  # files for Excel users
         validate(session)   # optional sanity checks
 
+        sessions = Session("my_folder")   # dict: file name -> Session
+        validate(sessions)                # checks every file
+
     The out-lap and in-lap are removed from data and laps.
     Use Session(path, keep_in_out=True) to keep them.
     """
+
+    def __new__(cls, path: str | Path | None = None, *args, **kwargs):
+        # A folder gives one Session per CSV file, returned as a dict
+        if path is not None and Path(path).is_dir():
+            return _load_folder(path, *args, **kwargs)
+        return super().__new__(cls)
 
     def __init__(self, path: str | Path, keep_in_out: bool = False):
         self.path = str(path)
@@ -583,14 +634,19 @@ class Session:
         return written
 
 
-def validate(session: Session) -> bool:
+def validate(session: Session | dict) -> bool:
     """
     Run sanity checks on a Session and print what was found.
+    Also accepts the dict returned by Session(folder) and checks every file.
     The checks look at the full recording as read from the file,
     including the out-lap and in-lap even if they were removed.
     The data is never changed. Warnings are stored in session.warnings.
-    Returns True if no issues were found.
+    Returns True if no issues were found (in every file, for a dict).
     """
+    if isinstance(session, dict):
+        results = [validate(s) for s in session.values()]
+        return all(results)
+
     session.warnings = _validate(session.metadata, session.raw, session.all_laps)
 
     name = Path(session.path).name
@@ -605,7 +661,7 @@ def validate(session: Session) -> bool:
 
 def get_version() -> str:
     """
-    Return the version of logger_data, e.g. "0.1.0".
+    Return the version of logger_data, e.g. "0.2.0".
     Useful when comparing results between teammates: same version, same parsing.
     """
     return __version__
